@@ -25,7 +25,7 @@ def handler_decorator(func):
 
 
 @handler_decorator
-async def subscribe_command(update: Update, _):
+async def add_command(update: Update, _):
     print(update.effective_user.id)
     try:
         rss_link = update.message.text.split(' ')[1]
@@ -39,7 +39,7 @@ async def subscribe_command(update: Update, _):
 @handler_decorator
 async def list_command(update: Update, _):
     user_feeds = data_dict[update.effective_user.id]
-    await update.message.reply_text('\n'.join(user_feeds))
+    await update.message.reply_text('List:\n' + '\n'.join(user_feeds))
 
 
 @handler_decorator
@@ -59,7 +59,7 @@ async def plain_text(update: Update, _):
 
 
 @handler_decorator
-async def fetch_user_feeds_command(update: Update, _):
+async def fetch_command(update: Update, _):
     entries_list = []
 
     feeds_urls = data_dict[update.effective_user.id]
@@ -88,18 +88,22 @@ async def fetch_user_feeds_command(update: Update, _):
     )
 
 
-# import schedule
-# schedule.every().week.at()
-
-
 TOKEN = open('.token').read()
 print(TOKEN)
 
-app = ApplicationBuilder().token(TOKEN).build()
-app.add_handler(CommandHandler("add", subscribe_command))
-app.add_handler(CommandHandler("list", list_command))
-app.add_handler(CommandHandler("del", del_command))
-app.add_handler(CommandHandler("fetch", fetch_user_feeds_command))
-app.add_handler(MessageHandler(filters.TEXT, plain_text))
+commands_funcs_mapping = {
+    "add": add_command,
+    "list": list_command,
+    "del": del_command,
+    "fetch": fetch_command,
+}
 
+app = ApplicationBuilder().token(TOKEN).build()
+
+for command_string, func in commands_funcs_mapping.items():
+    app.add_handler(
+        CommandHandler(command_string, list_command)
+    )
+
+app.add_handler(MessageHandler(filters.TEXT, plain_text))
 app.run_polling()
