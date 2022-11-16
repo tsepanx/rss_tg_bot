@@ -2,8 +2,10 @@ import datetime
 
 from telegram import Update
 from telegram.constants import ParseMode
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram.ext.filters import BaseFilter
+
+from functools import wraps
 
 from rss import get_parsed_feed
 
@@ -11,6 +13,7 @@ data_dict: dict[int, list] = {}
 
 
 def handler_decorator(func):
+    @wraps(func)
     async def wrapper(update: Update, *args, **kwargs):
         if update.message:
             user_id = update.message.from_user.id
@@ -100,9 +103,20 @@ commands_funcs_mapping = {
 
 app = ApplicationBuilder().token(TOKEN).build()
 
+async def callback_second(context: ContextTypes.DEFAULT_TYPE):
+    for i in data_dict.keys():
+        await context.bot.send_message(
+            chat_id=i,
+            text='One message every 1 second'
+        )
+
+jq = app.job_queue
+job_minute = jq.run_repeating(callback_second, interval=1, first=0)
+
+
 for command_string, func in commands_funcs_mapping.items():
     app.add_handler(
-        CommandHandler(command_string, list_command)
+        CommandHandler(command_string, func)
     )
 
 app.add_handler(MessageHandler(filters.TEXT, plain_text))
