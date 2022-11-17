@@ -104,9 +104,10 @@ def fetch_for_given_chat_id(chat_id: int) -> str:
     result_msg_str = ''
 
     for feed_obj in current_chat_feeds:
+        tmp_feed_msg_part = ''
         parser_obj = get_parsed_feed(feed_obj.url)
 
-        result_msg_str += f'<b>{parser_obj.feed.title}</b>\n\n'
+        tmp_feed_msg_part += f'<b>{parser_obj.feed.title}</b>\n'
 
         entries_list = parser_obj.entries
         entries_list.sort(key=lambda x: datetime.datetime.fromisoformat(x.published), reverse=True)
@@ -119,10 +120,6 @@ def fetch_for_given_chat_id(chat_id: int) -> str:
             entries_list
         ))
 
-        if not entries_list:
-            result_msg_str += 'EMPTY\n'
-            continue
-
         for i in range(len(entries_list)):
             entry = entries_list[i]
             entry_id = entry.id
@@ -131,10 +128,16 @@ def fetch_for_given_chat_id(chat_id: int) -> str:
             entry_title = entry.title
             entry_content = entry.content
 
-            result_msg_str += f"<a href='{entry_link}'>[{i}]</a> {entry_title}\n"
+            tmp_feed_msg_part += f"<a href='{entry_link}'>[{i}]</a> {entry_title}\n"
 
         feed_obj.last_update_time = datetime.datetime.now(datetime.timezone.utc)
-        result_msg_str += "\n"
+        tmp_feed_msg_part += "\n"
+
+        if entries_list:
+            result_msg_str += tmp_feed_msg_part
+
+    if not result_msg_str:
+        result_msg_str = "No updates :("
 
     return result_msg_str
 
