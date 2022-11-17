@@ -24,7 +24,7 @@ async def wrapped_reply_text(update: Update, msg: str, *args, **kwargs):
 @dataclasses.dataclass
 class FeedDataclass:
     url: str
-    last_update_time: Optional[datetime.datetime] = datetime.datetime.min
+    last_update_time: Optional[datetime.datetime] = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
     # last_item_id: Optional[str] = None
 
     def __str__(self):
@@ -111,9 +111,11 @@ def fetch_for_given_chat_id(chat_id: int) -> str:
         entries_list = parser_obj.entries
         entries_list.sort(key=lambda x: datetime.datetime.fromisoformat(x.published), reverse=True)
 
+        print(entries_list[0].published)
+
         # Take only entries, published after last update time
         entries_list = list(filter(
-            lambda x: datetime.datetime.fromisoformat(x.published).replace(tzinfo=None) > feed_obj.last_update_time,
+            lambda x: datetime.datetime.fromisoformat(x.published) > feed_obj.last_update_time,
             entries_list
         ))
 
@@ -131,7 +133,7 @@ def fetch_for_given_chat_id(chat_id: int) -> str:
 
             result_msg_str += f"<a href='{entry_link}'>[{i}]</a> {entry_title}\n"
 
-        feed_obj.last_update_time = datetime.datetime.now()
+        feed_obj.last_update_time = datetime.datetime.now(datetime.timezone.utc)
         result_msg_str += "\n"
 
     return result_msg_str
