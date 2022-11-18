@@ -1,25 +1,31 @@
 import dataclasses
 import datetime
 from typing import Optional
+from functools import wraps
+import validators
 
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-from functools import wraps
 from utils import get_parsed_feed, get_divided_long_message
 
-MAX_MSG_LEN = 4096
+MAX_MSG_LEN = 7000
+DEFAULT_TZ = datetime.timezone(datetime.timedelta(hours=3))
+PERIODICAL_FETCHING_TIME = datetime.time(hour=18, tzinfo=DEFAULT_TZ)
 
-async def wrapped_reply_text(update: Update, msg: str, *args, **kwargs):
-    print(msg)
-    if len(msg) > MAX_MSG_LEN:
-        fpart, leftpart = get_divided_long_message(msg, MAX_MSG_LEN)
+async def wrapped_send_text(send_message_func, *args, **kwargs):
+    text = kwargs.pop("text", None)
+    if not text:
+        raise Exception("No text argument passed")
 
-        await update.message.reply_text(fpart, *args, **kwargs)
-        await wrapped_reply_text(update, leftpart, *args, **kwargs)
+    if len(text) > MAX_MSG_LEN:
+        lpart, rpart = get_divided_long_message(text, MAX_MSG_LEN)
+
+        await send_message_func(*args, text=lpart, **kwargs)
+        await wrapped_send_text(send_message_func, *args, text=rpart, **kwargs)
     else:
-        await update.message.reply_text(msg, *args, **kwargs)
+        await send_message_func(*args, text=text, **kwargs)
 
 @dataclasses.dataclass
 class FeedDataclass:
@@ -30,8 +36,11 @@ class FeedDataclass:
     def __str__(self):
         return self.url
 
+    def __hash__(self):
+        return self.url.__hash__()
 
-data_dict: dict[int, list[FeedDataclass]] = {}
+
+chats_data: dict[int, list[FeedDataclass]] = {}
 
 
 def handler_decorator(func):
@@ -45,8 +54,8 @@ def handler_decorator(func):
         if update.message:
             user_id = update.message.from_user.id
 
-            if user_id not in data_dict:
-                data_dict[user_id] = []
+            if user_id not in chats_data:
+                chats_data[user_id] = []
 
         try:
             await func(update, *args, **kwargs)
@@ -61,19 +70,29 @@ async def add_command(update: Update, _):
     """
     Subscribe to a list of rss urls, given separated by spacing characters
     """
-    rss_links = update.message.text.split()[1:]
-    for link in rss_links:
-        data_dict[update.effective_user.id].append(
-            FeedDataclass(link)
-        )
+    user_feeds = chats_data[update.effective_user.id]
+    args = update.message.text.split()[1:]
+    for i in args:
+        if not validators.url(i):
+            await update.message.reply_text(f"Error: {i} is not a url")
+            continue
 
-        await update.message.reply_text(f"Subscribed {link}")
+        if FeedDataclass(i) not in user_feeds:
+            user_feeds.append(FeedDataclass(i))
+            await update.message.reply_text(f"Subscribed {i}")
+        else:
+            await update.message.reply_text(f"Error: {i} is already in subscriptions")
 
 
 @handler_decorator
 async def list_command(update: Update, _):
-    user_feeds = data_dict[update.effective_user.id]
-    await update.message.reply_text('List:\n' + '\n'.join(map(str, user_feeds)))
+    user_feeds = chats_data[update.effective_user.id]
+    if not user_feeds:
+        await update.message.reply_text("List is empty")
+        return
+
+    res_str = 'List:\n' + '\n'.join([f"[{i}] {user_feeds[i]}" for i in range(len(user_feeds))])
+    await update.message.reply_text(res_str)
 
 
 @handler_decorator
@@ -81,18 +100,32 @@ async def del_command(update: Update, _):
     """
     Delete one of subscribed feeds
     """
-    current_chat_feeds = data_dict[update.effective_user.id]
+    user_feeds = chats_data[update.effective_user.id]
 
-    rss_link = update.message.text.split(' ')[1]
-    feed_dataclass_obj = list(filter(lambda x: x.url == rss_link, current_chat_feeds))[0]
-    current_chat_feeds.remove(feed_dataclass_obj)
-    await update.message.reply_text(f"Removed {rss_link}")
+    arg1 = update.message.text.split(' ')[1]
+    if arg1.isdigit():
+        try:
+            feed_dataclass_obj = user_feeds[int(arg1)]
+        except KeyError:
+            feed_dataclass_obj = None
+            await update.message.reply_text(f"Error: {arg1} is out of bounds")
+    else:
+        # Find in list by matching x.url attribute
+        try:
+            feed_dataclass_obj = list(filter(lambda x: x.url == arg1, user_feeds))[0]
+        except KeyError:
+            feed_dataclass_obj = None
+            await update.message.reply_text(f"Error: {arg1} is not found in subscriptions")
+
+    if feed_dataclass_obj:
+        user_feeds.remove(feed_dataclass_obj)
+    await update.message.reply_text(f"Removed {feed_dataclass_obj.url}")
 
 
 @handler_decorator
 async def plaintext_handler(update: Update, _):
     text = update.message.text
-    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 def fetch_for_given_chat_id(chat_id: int) -> str:
     """
@@ -100,7 +133,7 @@ def fetch_for_given_chat_id(chat_id: int) -> str:
     @param chat_id: fetch feeds from given chat_id subscriptions
     @return: message to send
     """
-    current_chat_feeds: list[FeedDataclass] = data_dict[chat_id]
+    current_chat_feeds: list[FeedDataclass] = chats_data[chat_id]
     result_msg_str = ''
 
     for feed_obj in current_chat_feeds:
@@ -111,8 +144,6 @@ def fetch_for_given_chat_id(chat_id: int) -> str:
 
         entries_list = parser_obj.entries
         entries_list.sort(key=lambda x: datetime.datetime.fromisoformat(x.published), reverse=True)
-
-        print(entries_list[0].published)
 
         # Take only entries, published after last update time
         entries_list = list(filter(
@@ -146,24 +177,22 @@ def fetch_for_given_chat_id(chat_id: int) -> str:
 async def fetch_command(update: Update, _):
     result_msg = fetch_for_given_chat_id(update.effective_user.id)
 
-    await wrapped_reply_text(
-        update,
-        result_msg,
+    await wrapped_send_text(
+        update.message.reply_text,
+        text=result_msg,
         parse_mode=ParseMode.HTML
     )
 
 
-async def callback_daily(context: ContextTypes.DEFAULT_TYPE):
-    print('daily')
-    for chat_id in data_dict.keys():
-        result_msg = fetch_for_given_chat_id(chat_id)
+async def callback_periodically(context: ContextTypes.DEFAULT_TYPE):
+    for chat_id in chats_data.keys():
+        result_msg = "--- PERIODICAL FETCH ---\n\n" + fetch_for_given_chat_id(chat_id)
 
-        result_msg = "DAILY FETCH:\n" + result_msg
-
-        await context.bot.send_message(
-            chat_id=chat_id,
+        await wrapped_send_text(
+            context.bot.send_message,
             text=result_msg,
-            parse_mode=ParseMode.MARKDOWN
+            chat_id=chat_id,
+            parse_mode=ParseMode.HTML
         )
 
 
@@ -178,7 +207,12 @@ commands_funcs_mapping = {
 }
 
 app = ApplicationBuilder().token(TOKEN).build()
-job_minute = app.job_queue.run_repeating(callback_daily, interval=datetime.timedelta(days=1))
+
+job_daily = app.job_queue.run_repeating(
+    callback_periodically,
+    interval=datetime.timedelta(days=1),
+    first=PERIODICAL_FETCHING_TIME
+)
 
 for command_string, func in commands_funcs_mapping.items():
     app.add_handler(CommandHandler(command_string, func))
