@@ -140,6 +140,9 @@ def fetch_for_given_chat_id(chat_id: int) -> str:
         tmp_feed_msg_part = ''
         parser_obj = get_parsed_feed(feed_obj.url)
 
+        if parser_obj.status == 404:
+            continue
+
         tmp_feed_msg_part += f'<b>{parser_obj.feed.title}</b>\n'
 
         entries_list = parser_obj.entries
