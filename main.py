@@ -143,7 +143,7 @@ def fetch_for_given_chat_id(chat_id: int) -> str:
         try:
             parser_obj = get_parsed_feed(url)
 
-            if parser_obj.get('bozo_exception') or parser_obj.get('status'):
+            if parser_obj.get('bozo_exception') or parser_obj.get('status') != 200:
                 raise Exception
         except Exception:  # Exception occurred manually, or while fetching url
             print(f"Error fetching url: {url}")
