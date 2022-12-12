@@ -147,7 +147,7 @@ def fetch_for_given_chat_id(chat_id: int) -> str:
                 raise Exception
         except Exception:  # Exception occurred manually, or while fetching url
             print(f"Error fetching url: {url}")
-            result_msg_str += f"err:\n{url}"
+            result_msg_str += f"err:\n{url}\n"
             # yield error_msg
             continue
 
