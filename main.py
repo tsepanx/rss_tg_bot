@@ -14,6 +14,8 @@ MAX_MSG_LEN = 7000
 DEFAULT_TZ = datetime.timezone(datetime.timedelta(hours=3))
 PERIODICAL_FETCHING_TIME = datetime.time(hour=18, tzinfo=DEFAULT_TZ)
 
+MIN_TIME = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
+
 async def wrapped_send_text(send_message_func, *args, **kwargs):
     text = kwargs.pop("text", None)
     if not text:
@@ -30,7 +32,7 @@ async def wrapped_send_text(send_message_func, *args, **kwargs):
 @dataclasses.dataclass
 class FeedDataclass:
     url: str
-    last_update_time: Optional[datetime.datetime] = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
+    last_update_time: Optional[datetime.datetime] = MIN_TIME
     # last_item_id: Optional[str] = None
 
     def __str__(self):
@@ -47,7 +49,6 @@ def handler_decorator(func):
     """
     Wrapper over each handler
     @param func: handler func
-    @return:
     """
     @wraps(func)
     async def wrapper(update: Update, *args, **kwargs):
@@ -138,9 +139,16 @@ def fetch_for_given_chat_id(chat_id: int) -> str:
 
     for feed_obj in current_chat_feeds:
         tmp_feed_msg_part = ''
-        parser_obj = get_parsed_feed(feed_obj.url)
+        url = feed_obj.url
+        try:
+            parser_obj = get_parsed_feed(url)
 
-        if parser_obj.status == 404:
+            if parser_obj.get('bozo_exception') or parser_obj.status == 404:
+                raise Exception
+        except Exception:  # Exception occurred manually, or while fetching url
+            print(f"Error fetching url: {url}")
+            result_msg_str += f"err:\n{url}"
+            # yield error_msg
             continue
 
         tmp_feed_msg_part += f'<b>{parser_obj.feed.title}</b>\n'
