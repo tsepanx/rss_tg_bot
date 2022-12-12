@@ -197,14 +197,18 @@ async def fetch_command(update: Update, _):
 
 async def callback_periodically(context: ContextTypes.DEFAULT_TYPE):
     for chat_id in chats_data.keys():
-        result_msg = "--- PERIODICAL FETCH ---\n\n" + fetch_for_given_chat_id(chat_id)
 
-        await wrapped_send_text(
+        msgs_to_send = [
+            "--- PERIODICAL FETCH ---\n\n",
+            fetch_for_given_chat_id(chat_id)
+        ]
+
+        [await wrapped_send_text(
             context.bot.send_message,
-            text=result_msg,
+            text=msg,
             chat_id=chat_id,
             parse_mode=ParseMode.HTML
-        )
+        ) for msg in msgs_to_send]
 
 
 TOKEN = open('.token').read()
