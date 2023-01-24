@@ -1,8 +1,10 @@
+import functools
+
 import feedparser
 
 
 def get_parsed_feed(url: str) -> feedparser.FeedParserDict:
-    print("")
+    print(f"Fetching {url}")
     return feedparser.parse(url)
 
 
@@ -22,3 +24,11 @@ def get_divided_long_message(text, max_size) -> [str, str]:
     text = text[border:]
 
     return subtext, text
+
+
+def to_list(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs) -> list:
+        res = list(func(*args, **kwargs))
+        return res
+    return wrapper

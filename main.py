@@ -1,20 +1,23 @@
 import dataclasses
 import datetime
+import traceback
 from typing import Optional
 from functools import wraps
 import validators
+import feedparser
 
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-from utils import get_parsed_feed, get_divided_long_message
+from utils import get_parsed_feed, get_divided_long_message, to_list
 
 MAX_MSG_LEN = 7000
 DEFAULT_TZ = datetime.timezone(datetime.timedelta(hours=3))
 PERIODICAL_FETCHING_TIME = datetime.time(hour=18, tzinfo=DEFAULT_TZ)
 
 MIN_TIME = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
+
 
 async def wrapped_send_text(send_message_func, *args, **kwargs):
     text = kwargs.pop("text", None)
@@ -29,10 +32,12 @@ async def wrapped_send_text(send_message_func, *args, **kwargs):
     else:
         await send_message_func(*args, text=text, **kwargs)
 
+
 @dataclasses.dataclass
 class FeedDataclass:
     url: str
     last_update_time: Optional[datetime.datetime] = MIN_TIME
+
     # last_item_id: Optional[str] = None
 
     def __str__(self):
@@ -50,6 +55,7 @@ def handler_decorator(func):
     Wrapper over each handler
     @param func: handler func
     """
+
     @wraps(func)
     async def wrapper(update: Update, *args, **kwargs):
         if update.message:
@@ -61,7 +67,10 @@ def handler_decorator(func):
         try:
             await func(update, *args, **kwargs)
         except Exception as e:
-            await update.message.reply_text(f"Error executing {func.__name__} func:\n{e}")
+            await wrapped_send_text(update.message.reply_text, text=traceback.format_exc())
+            # exc_type, exc_obj, exc_tb = sys.exc_info()
+            # fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+            # await update.message.reply_text(f"Error executing {func.__name__} func:\n{fname}: {exc_tb.tb_lineno} - {exc_type}\n{e}")
 
     return wrapper
 
@@ -128,30 +137,41 @@ async def plaintext_handler(update: Update, _):
     text = update.message.text
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
-def fetch_for_given_chat_id(chat_id: int) -> str:
+
+@dataclasses.dataclass
+class SingleFetchedFeedDataclass:
+    feed_dataclass: FeedDataclass
+    feed_parser_obj: feedparser.FeedParserDict | None
+    processed_entries: [feedparser.FeedParserDict]
+    is_error: bool
+
+
+@to_list
+def fetch_for_given_chat_id(chat_id: int) -> [SingleFetchedFeedDataclass]:
     """
     Fetch new rss entries
     @param chat_id: fetch feeds from given chat_id subscriptions
     @return: message to send
     """
     current_chat_feeds: list[FeedDataclass] = chats_data[chat_id]
-    result_msg_str = ''
+    # result_msg_str = ''
 
+    feed_obj: FeedDataclass
     for feed_obj in current_chat_feeds:
-        tmp_feed_msg_part = ''
+        single_feed_dataclass = SingleFetchedFeedDataclass(feed_obj, None, [], False)
+
+        # tmp_feed_msg_part = ''
         url = feed_obj.url
         try:
-            parser_obj = get_parsed_feed(url)
+            parser_obj = get_parsed_feed(url)  # Fetching command
+            single_feed_dataclass.feed_parser_obj = parser_obj
 
             if parser_obj.get('bozo_exception') or parser_obj.get('status') != 200:
                 raise Exception
-        except Exception:  # Exception occurred manually, or while fetching url
-            print(f"Error fetching url: {url}")
-            result_msg_str += f"err:{url}\n"
-            # yield error_msg
+        except Exception as e:  # Exception occurred manually, or while fetching url
+            print(f"Error fetching url: {url}", e, sep='\n')
+            single_feed_dataclass.is_error = True
             continue
-
-        tmp_feed_msg_part += f'<b>{parser_obj.feed.title}</b>\n'
 
         entries_list = parser_obj.entries
         entries_list.sort(key=lambda x: datetime.datetime.fromisoformat(x.published), reverse=True)
@@ -162,31 +182,53 @@ def fetch_for_given_chat_id(chat_id: int) -> str:
             entries_list
         ))
 
-        for i in range(len(entries_list)):
-            entry = entries_list[i]
+        single_feed_dataclass.processed_entries = entries_list
+
+        if not entries_list:
+            continue
+
+        feed_obj.last_update_time = datetime.datetime.now(datetime.timezone.utc)
+
+        yield single_feed_dataclass
+
+
+def form_message_from_fetched(fetched_dataclasses: [SingleFetchedFeedDataclass]) -> str | None:
+    message_str = ""
+
+    successfully_fetched_feeds = list(filter(lambda x: x.is_error == False, fetched_dataclasses))
+    single_feed: SingleFetchedFeedDataclass
+    for single_feed in successfully_fetched_feeds:
+        message_str += f'<b>{single_feed.feed_parser_obj.feed.title}</b>\n'
+
+        for ind, entry in enumerate(single_feed.processed_entries):
             entry_id = entry.id
             entry_link = entry.link
             entry_published = datetime.datetime.fromisoformat(entry.published)
             entry_title = entry.title
             entry_content = entry.content
 
-            tmp_feed_msg_part += f"<a href='{entry_link}'>[{i}]</a> {entry_title}\n"
+            message_str += f"<a href='{entry_link}'>[{ind}]</a> {entry_title}\n"
+        message_str += '\n'
 
-        feed_obj.last_update_time = datetime.datetime.now(datetime.timezone.utc)
-        tmp_feed_msg_part += "\n"
+    if not message_str:
+        return None
 
-        if entries_list:
-            result_msg_str += tmp_feed_msg_part
+    message_str += '\n'
 
-    if not result_msg_str:
-        result_msg_str = "No updates :("
+    error_to_fetch_feeds = filter(lambda x: x.is_error == True, fetched_dataclasses)
+    for err_feed in error_to_fetch_feeds:
+        message_str += f"err:{err_feed.feed_dataclass.url}\n"
 
-    return result_msg_str
+    return message_str
 
 
 @handler_decorator
 async def fetch_command(update: Update, _):
-    result_msg = fetch_for_given_chat_id(update.effective_user.id)
+    fetched_list = fetch_for_given_chat_id(update.effective_user.id)
+    result_msg = form_message_from_fetched(fetched_list)
+
+    if not result_msg:
+        result_msg = "No updates :("
 
     await wrapped_send_text(
         update.message.reply_text,
@@ -198,17 +240,24 @@ async def fetch_command(update: Update, _):
 async def callback_periodically(context: ContextTypes.DEFAULT_TYPE):
     for chat_id in chats_data.keys():
 
+        fetched_feeds = fetch_for_given_chat_id(chat_id)
+        updates_msg = form_message_from_fetched(fetched_feeds)
+
+        if not updates_msg:  # Do not send messages if no updates
+            return None
+
         msgs_to_send = [
             "--- PERIODICAL FETCH ---\n\n",
-            fetch_for_given_chat_id(chat_id)
+            updates_msg
         ]
 
-        [await wrapped_send_text(
-            context.bot.send_message,
-            text=msg,
-            chat_id=chat_id,
-            parse_mode=ParseMode.HTML
-        ) for msg in msgs_to_send]
+        for msg in msgs_to_send:
+            await wrapped_send_text(
+                context.bot.send_message,
+                text=msg,
+                chat_id=chat_id,
+                parse_mode=ParseMode.HTML
+            )
 
 
 TOKEN = open('.token').read()
@@ -223,10 +272,10 @@ commands_funcs_mapping = {
 
 app = ApplicationBuilder().token(TOKEN).build()
 
-job_daily = app.job_queue.run_repeating(
+job_daily = app.job_queue.run_daily(
     callback_periodically,
-    interval=datetime.timedelta(days=1),
-    first=PERIODICAL_FETCHING_TIME
+    days=(5,),  # Friday
+    time=PERIODICAL_FETCHING_TIME
 )
 
 for command_string, func in commands_funcs_mapping.items():
