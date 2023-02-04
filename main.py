@@ -3,12 +3,13 @@ import datetime
 import traceback
 from typing import Optional
 from functools import wraps
+
 import validators
 import feedparser
 
 from telegram import Update
 from telegram.constants import ParseMode
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, PicklePersistence
 
 from utils import get_parsed_feed, get_divided_long_message, to_list
 
@@ -47,7 +48,7 @@ class FeedDataclass:
         return self.url.__hash__()
 
 
-chats_data: dict[int, list[FeedDataclass]] = {}
+FEEDS_KEY = 'feeds'
 
 
 def handler_decorator(func):
@@ -57,30 +58,26 @@ def handler_decorator(func):
     """
 
     @wraps(func)
-    async def wrapper(update: Update, *args, **kwargs):
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         if update.message:
-            user_id = update.message.from_user.id
-
-            if user_id not in chats_data:
-                chats_data[user_id] = []
+            if FEEDS_KEY not in context.chat_data:
+                context.chat_data[FEEDS_KEY] = list()
 
         try:
-            await func(update, *args, **kwargs)
+            await func(update, context, *args, **kwargs)
         except Exception as e:
             await wrapped_send_text(update.message.reply_text, text=traceback.format_exc())
-            # exc_type, exc_obj, exc_tb = sys.exc_info()
-            # fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-            # await update.message.reply_text(f"Error executing {func.__name__} func:\n{fname}: {exc_tb.tb_lineno} - {exc_type}\n{e}")
 
     return wrapper
 
 
 @handler_decorator
-async def add_command(update: Update, _):
+async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Subscribe to a list of rss urls, given separated by spacing characters
     """
-    user_feeds = chats_data[update.effective_user.id]
+    user_feeds: list[FeedDataclass] = context.chat_data.get(FEEDS_KEY, list())
+
     args = update.message.text.split()[1:]
     for i in args:
         if not validators.url(i):
@@ -95,8 +92,9 @@ async def add_command(update: Update, _):
 
 
 @handler_decorator
-async def list_command(update: Update, _):
-    user_feeds = chats_data[update.effective_user.id]
+async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_feeds: list[FeedDataclass] = context.chat_data.get(FEEDS_KEY, list())
+
     if not user_feeds:
         await update.message.reply_text("List is empty")
         return
@@ -106,26 +104,34 @@ async def list_command(update: Update, _):
 
 
 @handler_decorator
-async def del_command(update: Update, _):
+async def del_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Delete one of subscribed feeds
     """
-    user_feeds = chats_data[update.effective_user.id]
+    user_feeds: list[FeedDataclass] = context.chat_data.get(FEEDS_KEY, list())
 
-    arg1 = update.message.text.split(' ')[1]
-    if arg1.isdigit():
+    query_args = context.args
+    if len(query_args) != 1:
+        await wrapped_send_text(update.message.reply_text, text="Wrong format: Should be exactly one argument")
+        return
+
+    first_arg = query_args[0]
+
+    if first_arg.isdigit():
         try:
-            feed_dataclass_obj = user_feeds[int(arg1)]
-        except KeyError:
+            feed_dataclass_obj = user_feeds[int(first_arg)]
+        except IndexError:
             feed_dataclass_obj = None
-            await update.message.reply_text(f"Error: {arg1} is out of bounds")
+            await update.message.reply_text(f"Error: number '{first_arg}' is out of bounds")
+            return
     else:
         # Find in list by matching x.url attribute
         try:
-            feed_dataclass_obj = list(filter(lambda x: x.url == arg1, user_feeds))[0]
-        except KeyError:
+            feed_dataclass_obj = list(filter(lambda x: x.url == first_arg, user_feeds))[0]
+        except IndexError:
             feed_dataclass_obj = None
-            await update.message.reply_text(f"Error: {arg1} is not found in subscriptions")
+            await update.message.reply_text(f"Error: {first_arg} is not found in subscriptions")
+            return
 
     if feed_dataclass_obj:
         user_feeds.remove(feed_dataclass_obj)
@@ -147,20 +153,18 @@ class SingleFetchedFeedDataclass:
 
 
 @to_list
-def fetch_for_given_chat_id(chat_id: int) -> [SingleFetchedFeedDataclass]:
+def fetch_for_given_chat(chat_data: dict) -> [SingleFetchedFeedDataclass]:
     """
     Fetch new rss entries
-    @param chat_id: fetch feeds from given chat_id subscriptions
+    @param chat_data: context.chat_data for given chat
     @return: message to send
     """
-    current_chat_feeds: list[FeedDataclass] = chats_data[chat_id]
-    # result_msg_str = ''
+    chat_feeds: list[FeedDataclass] = chat_data[FEEDS_KEY]
 
     feed_obj: FeedDataclass
-    for feed_obj in current_chat_feeds:
+    for feed_obj in chat_feeds:
         single_feed_dataclass = SingleFetchedFeedDataclass(feed_obj, None, [], False)
 
-        # tmp_feed_msg_part = ''
         url = feed_obj.url
         try:
             parser_obj = get_parsed_feed(url)  # Fetching command
@@ -223,8 +227,8 @@ def form_message_from_fetched(fetched_dataclasses: [SingleFetchedFeedDataclass])
 
 
 @handler_decorator
-async def fetch_command(update: Update, _):
-    fetched_list = fetch_for_given_chat_id(update.effective_user.id)
+async def fetch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    fetched_list = fetch_for_given_chat(context.chat_data)
     result_msg = form_message_from_fetched(fetched_list)
 
     if not result_msg:
@@ -238,9 +242,12 @@ async def fetch_command(update: Update, _):
 
 
 async def callback_periodically(context: ContextTypes.DEFAULT_TYPE):
-    for chat_id in chats_data.keys():
+    all_chats_data_dict: dict[int, dict] = context.application.chat_data
 
-        fetched_feeds = fetch_for_given_chat_id(chat_id)
+    for chat_id in all_chats_data_dict.keys():
+        chat_data = all_chats_data_dict[chat_id]
+
+        fetched_feeds = fetch_for_given_chat(chat_data)
         updates_msg = form_message_from_fetched(fetched_feeds)
 
         if not updates_msg:  # Do not send messages if no updates
@@ -259,27 +266,31 @@ async def callback_periodically(context: ContextTypes.DEFAULT_TYPE):
                 parse_mode=ParseMode.HTML
             )
 
+if __name__ == "__main__":
+    TOKEN = open('.token').read(); print(TOKEN)
 
-TOKEN = open('.token').read()
-print(TOKEN)
+    persistence = PicklePersistence(filepath='persitencebot', update_interval=1)
 
-commands_funcs_mapping = {
-    "add": add_command,
-    "list": list_command,
-    "del": del_command,
-    "fetch": fetch_command,
-}
+    app = ApplicationBuilder() \
+        .persistence(persistence) \
+        .token(TOKEN) \
+        .build()
 
-app = ApplicationBuilder().token(TOKEN).build()
+    job_daily = app.job_queue.run_daily(
+        callback_periodically,
+        days=(5,),  # Friday
+        time=PERIODICAL_FETCHING_TIME
+    )
 
-job_daily = app.job_queue.run_daily(
-    callback_periodically,
-    days=(5,),  # Friday
-    time=PERIODICAL_FETCHING_TIME
-)
+    commands_funcs_mapping = {
+        "add": add_command,
+        "list": list_command,
+        "del": del_command,
+        "fetch": fetch_command,
+    }
 
-for command_string, func in commands_funcs_mapping.items():
-    app.add_handler(CommandHandler(command_string, func))
+    for command_string, func in commands_funcs_mapping.items():
+        app.add_handler(CommandHandler(command_string, func))
 
-app.add_handler(MessageHandler(filters.TEXT, plaintext_handler))
-app.run_polling()
+    app.add_handler(MessageHandler(filters.TEXT, plaintext_handler))
+    app.run_polling()
