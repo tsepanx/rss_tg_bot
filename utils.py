@@ -1,6 +1,7 @@
 import functools
-
 import feedparser
+
+MAX_MSG_LEN = 7000
 
 
 def get_parsed_feed(url: str) -> feedparser.FeedParserDict:

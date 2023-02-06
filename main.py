@@ -11,13 +11,14 @@ from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, PicklePersistence
 
-from utils import get_parsed_feed, get_divided_long_message, to_list
+from utils import get_parsed_feed, get_divided_long_message, to_list, MAX_MSG_LEN
 
-MAX_MSG_LEN = 7000
 DEFAULT_TZ = datetime.timezone(datetime.timedelta(hours=3))
 PERIODICAL_FETCHING_TIME = datetime.time(hour=18, tzinfo=DEFAULT_TZ)
 
 MIN_TIME = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
+
+FEEDS_KEY = 'feeds'
 
 
 async def wrapped_send_text(send_message_func, *args, **kwargs):
@@ -48,9 +49,6 @@ class FeedDataclass:
         return self.url.__hash__()
 
 
-FEEDS_KEY = 'feeds'
-
-
 def handler_decorator(func):
     """
     Wrapper over each handler
@@ -65,7 +63,7 @@ def handler_decorator(func):
 
         try:
             await func(update, context, *args, **kwargs)
-        except Exception as e:
+        except Exception:
             await wrapped_send_text(update.message.reply_text, text=traceback.format_exc())
 
     return wrapper
@@ -196,7 +194,7 @@ def fetch_for_given_chat(chat_data: dict) -> [SingleFetchedFeedDataclass]:
         yield single_feed_dataclass
 
 
-def form_message_from_fetched(fetched_dataclasses: [SingleFetchedFeedDataclass]) -> str | None:
+def build_message_from(fetched_dataclasses: [SingleFetchedFeedDataclass]) -> str | None:
     message_str = ""
 
     successfully_fetched_feeds = list(filter(lambda x: x.is_error == False, fetched_dataclasses))
@@ -229,7 +227,7 @@ def form_message_from_fetched(fetched_dataclasses: [SingleFetchedFeedDataclass])
 @handler_decorator
 async def fetch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     fetched_list = fetch_for_given_chat(context.chat_data)
-    result_msg = form_message_from_fetched(fetched_list)
+    result_msg = build_message_from(fetched_list)
 
     if not result_msg:
         result_msg = "No updates :("
@@ -242,13 +240,11 @@ async def fetch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def callback_periodically(context: ContextTypes.DEFAULT_TYPE):
-    all_chats_data_dict: dict[int, dict] = context.application.chat_data
-
-    for chat_id in all_chats_data_dict.keys():
-        chat_data = all_chats_data_dict[chat_id]
+    for chat_id in context.application.chat_data.keys():
+        chat_data = context.application.chat_data[chat_id]
 
         fetched_feeds = fetch_for_given_chat(chat_data)
-        updates_msg = form_message_from_fetched(fetched_feeds)
+        updates_msg = build_message_from(fetched_feeds)
 
         if not updates_msg:  # Do not send messages if no updates
             return None
