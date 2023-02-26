@@ -1,4 +1,5 @@
 import functools
+
 import feedparser
 
 MAX_MSG_LEN = 7000
@@ -19,7 +20,7 @@ def get_divided_long_message(text, max_size) -> [str, str]:
     return: text part from start, and the rest of text
     """
     subtext = text[:max_size]
-    border = subtext.rfind('\n')
+    border = subtext.rfind("\n")
 
     subtext = subtext[:border]
     text = text[border:]
@@ -32,4 +33,5 @@ def to_list(func):
     def wrapper(*args, **kwargs) -> list:
         res = list(func(*args, **kwargs))
         return res
+
     return wrapper

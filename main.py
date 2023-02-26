@@ -1,24 +1,43 @@
 import dataclasses
 import datetime
 import traceback
-from typing import Optional
-from functools import wraps
+from functools import (
+    wraps,
+)
+from typing import (
+    Optional,
+)
 
-import validators
 import feedparser
+import validators
+from telegram import (
+    Update,
+)
+from telegram.constants import (
+    ParseMode,
+)
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    PicklePersistence,
+    filters,
+)
 
-from telegram import Update
-from telegram.constants import ParseMode
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, PicklePersistence
-
-from utils import get_parsed_feed, get_divided_long_message, to_list, MAX_MSG_LEN
+from utils import (
+    MAX_MSG_LEN,
+    get_divided_long_message,
+    get_parsed_feed,
+    to_list,
+)
 
 DEFAULT_TZ = datetime.timezone(datetime.timedelta(hours=3))
 PERIODICAL_FETCHING_TIME = datetime.time(hour=18, tzinfo=DEFAULT_TZ)
 
 MIN_TIME = datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
 
-FEEDS_KEY = 'feeds'
+FEEDS_KEY = "feeds"
 
 
 async def wrapped_send_text(send_message_func, *args, **kwargs):
@@ -94,10 +113,9 @@ async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_feeds: list[FeedDataclass] = context.chat_data.get(FEEDS_KEY, list())
 
     if not user_feeds:
-        await update.message.reply_text("List is empty")
-        return
+        return await update.message.reply_text("List is empty")
 
-    res_str = 'List:\n' + '\n'.join([f"[{i}] {user_feeds[i]}" for i in range(len(user_feeds))])
+    res_str = "List:\n" + "\n".join([f"[{i}] {user_feeds[i]}" for i in range(len(user_feeds))])
     await update.message.reply_text(res_str)
 
 
@@ -120,16 +138,14 @@ async def del_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             feed_dataclass_obj = user_feeds[int(first_arg)]
         except IndexError:
             feed_dataclass_obj = None
-            await update.message.reply_text(f"Error: number '{first_arg}' is out of bounds")
-            return
+            return await update.message.reply_text(f"Error: number '{first_arg}' is out of bounds")
     else:
         # Find in list by matching x.url attribute
         try:
             feed_dataclass_obj = list(filter(lambda x: x.url == first_arg, user_feeds))[0]
         except IndexError:
             feed_dataclass_obj = None
-            await update.message.reply_text(f"Error: {first_arg} is not found in subscriptions")
-            return
+            return await update.message.reply_text(f"Error: {first_arg} is not found in subscriptions")
 
     if feed_dataclass_obj:
         user_feeds.remove(feed_dataclass_obj)
@@ -168,10 +184,10 @@ def fetch_for_given_chat(chat_data: dict) -> [SingleFetchedFeedDataclass]:
             parser_obj = get_parsed_feed(url)  # Fetching command
             single_feed_dataclass.feed_parser_obj = parser_obj
 
-            if parser_obj.get('bozo_exception') or parser_obj.get('status') != 200:
+            if parser_obj.get("bozo_exception") or parser_obj.get("status") != 200:
                 raise Exception
         except Exception as e:  # Exception occurred manually, or while fetching url
-            print(f"Error fetching url: {url}", e, sep='\n')
+            print(f"Error fetching url: {url}", e, sep="\n")
             single_feed_dataclass.is_error = True
             continue
 
@@ -179,10 +195,9 @@ def fetch_for_given_chat(chat_data: dict) -> [SingleFetchedFeedDataclass]:
         entries_list.sort(key=lambda x: datetime.datetime.fromisoformat(x.published), reverse=True)
 
         # Take only entries, published after last update time
-        entries_list = list(filter(
-            lambda x: datetime.datetime.fromisoformat(x.published) > feed_obj.last_update_time,
-            entries_list
-        ))
+        entries_list = list(
+            filter(lambda x: datetime.datetime.fromisoformat(x.published) > feed_obj.last_update_time, entries_list)
+        )
 
         single_feed_dataclass.processed_entries = entries_list
 
@@ -200,7 +215,7 @@ def build_message_from(fetched_dataclasses: [SingleFetchedFeedDataclass]) -> str
     successfully_fetched_feeds = list(filter(lambda x: x.is_error == False, fetched_dataclasses))
     single_feed: SingleFetchedFeedDataclass
     for single_feed in successfully_fetched_feeds:
-        message_str += f'<b>{single_feed.feed_parser_obj.feed.title}</b>\n'
+        message_str += f"<b>{single_feed.feed_parser_obj.feed.title}</b>\n"
 
         for ind, entry in enumerate(single_feed.processed_entries):
             entry_id = entry.id
@@ -210,12 +225,12 @@ def build_message_from(fetched_dataclasses: [SingleFetchedFeedDataclass]) -> str
             entry_content = entry.content
 
             message_str += f"<a href='{entry_link}'>[{ind}]</a> {entry_title}\n"
-        message_str += '\n'
+        message_str += "\n"
 
     if not message_str:
         return None
 
-    message_str += '\n'
+    message_str += "\n"
 
     error_to_fetch_feeds = filter(lambda x: x.is_error == True, fetched_dataclasses)
     for err_feed in error_to_fetch_feeds:
@@ -232,11 +247,7 @@ async def fetch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not result_msg:
         result_msg = "No updates :("
 
-    await wrapped_send_text(
-        update.message.reply_text,
-        text=result_msg,
-        parse_mode=ParseMode.HTML
-    )
+    await wrapped_send_text(update.message.reply_text, text=result_msg, parse_mode=ParseMode.HTML)
 
 
 async def callback_periodically(context: ContextTypes.DEFAULT_TYPE):
@@ -249,34 +260,21 @@ async def callback_periodically(context: ContextTypes.DEFAULT_TYPE):
         if not updates_msg:  # Do not send messages if no updates
             return None
 
-        msgs_to_send = [
-            "--- PERIODICAL FETCH ---\n\n",
-            updates_msg
-        ]
+        msgs_to_send = ["--- PERIODICAL FETCH ---\n\n", updates_msg]
 
         for msg in msgs_to_send:
-            await wrapped_send_text(
-                context.bot.send_message,
-                text=msg,
-                chat_id=chat_id,
-                parse_mode=ParseMode.HTML
-            )
+            await wrapped_send_text(context.bot.send_message, text=msg, chat_id=chat_id, parse_mode=ParseMode.HTML)
+
 
 if __name__ == "__main__":
-    TOKEN = open('.token').read(); print(TOKEN)
+    TOKEN = open(".token").read()
+    print(TOKEN)
 
-    persistence = PicklePersistence(filepath='persitencebot', update_interval=1)
+    persistence = PicklePersistence(filepath="persitencebot", update_interval=1)
 
-    app = ApplicationBuilder() \
-        .persistence(persistence) \
-        .token(TOKEN) \
-        .build()
+    app = ApplicationBuilder().persistence(persistence).token(TOKEN).build()
 
-    job_daily = app.job_queue.run_daily(
-        callback_periodically,
-        days=(5,),  # Friday
-        time=PERIODICAL_FETCHING_TIME
-    )
+    job_daily = app.job_queue.run_daily(callback_periodically, days=(5,), time=PERIODICAL_FETCHING_TIME)  # Friday
 
     commands_funcs_mapping = {
         "add": add_command,
